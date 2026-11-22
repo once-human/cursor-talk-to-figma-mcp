@@ -413,6 +413,7 @@
         const queue = [];
 
         function send(name, params) {
+          return; // local edit: analytics disabled, nothing leaves this machine
           const eventParams = Object.assign(
             {
               session_id: sessionId,
@@ -762,15 +763,10 @@
       }
 
       // Add this function after the generateId() function
+      // local edit: fixed channel so Claude can join without being told an ID.
+      // Run the plugin in ONE file at a time (two files on "figma" would both execute commands).
       function generateChannelName() {
-        const characters = "abcdefghijklmnopqrstuvwxyz0123456789";
-        let result = "";
-        for (let i = 0; i < 8; i++) {
-          result += characters.charAt(
-            Math.floor(Math.random() * characters.length)
-          );
-        }
-        return result;
+        return "figma";
       }
 
       // Tab switching
