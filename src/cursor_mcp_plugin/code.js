@@ -262,6 +262,8 @@ async function handleCommand(command, params) {
       return await createSection(params);
     case "set_parent":
       return await setParent(params);
+    case "execute_code":
+      return await executeCode(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -4342,4 +4344,61 @@ async function setSelections(params) {
     notFoundIds: notFoundIds,
     message: `Selected ${nodes.length} nodes${notFoundIds.length > 0 ? ` (${notFoundIds.length} not found)` : ''}`
   };
+}
+
+// ---------------------------------------------------------------------------
+// execute_code: run arbitrary Figma Plugin API code (like the official Figma
+// MCP's use_figma). The code is the body of an async function with these in
+// scope: figma, params, log(...args), b64ToBytes(str). `return` a value to send
+// it back; nodes are turned into {id, name, type} so they can be serialized.
+// Only reachable through the localhost relay.
+// ---------------------------------------------------------------------------
+function toSerializable(value, depth) {
+  depth = depth || 0;
+  if (value === null || value === undefined) return value === undefined ? null : value;
+  const t = typeof value;
+  if (t === "string" || t === "number" || t === "boolean") return value;
+  if (t === "function") return "[function]";
+  if (depth > 6) return "[depth limit]";
+  if (value instanceof Uint8Array) return { bytes: value.length };
+  if (Array.isArray(value)) return value.map((v) => toSerializable(v, depth + 1));
+  if (t === "object" && typeof value.id === "string" && typeof value.type === "string" && "parent" in value) {
+    return { id: value.id, name: value.name, type: value.type };
+  }
+  const out = {};
+  for (const k of Object.keys(value)) {
+    try { out[k] = toSerializable(value[k], depth + 1); } catch (e) { out[k] = "[unreadable]"; }
+  }
+  return out;
+}
+
+async function executeCode(params) {
+  const { code, args } = params || {};
+  if (!code || typeof code !== "string") throw new Error("Missing code parameter");
+  const logs = [];
+  const log = (...a) => {
+    logs.push(a.map((x) => (typeof x === "string" ? x : JSON.stringify(toSerializable(x)))).join(" "));
+  };
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  let fn;
+  try {
+    fn = new AsyncFunction("figma", "params", "log", "b64ToBytes", code);
+  } catch (e) {
+    throw new Error("Code did not compile: " + (e && e.message ? e.message : String(e)));
+  }
+  // Never let one call hang the bridge: give up after timeoutMs (the work itself may still finish).
+  const timeoutMs = (params && params.timeoutMs) || 45000;
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error("execute_code timed out after " + timeoutMs + " ms")), timeoutMs);
+  });
+  try {
+    const result = await Promise.race([fn(figma, args || {}, log, base64ToUint8Array), timeout]);
+    clearTimeout(timer);
+    return { result: toSerializable(result), logs };
+  } catch (e) {
+    clearTimeout(timer);
+    const msg = e && e.message ? e.message : String(e);
+    throw new Error(msg + (logs.length ? "\nlogs:\n" + logs.join("\n") : ""));
+  }
 }

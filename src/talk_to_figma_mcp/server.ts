@@ -2657,7 +2657,8 @@ type FigmaCommand =
   | "set_image_fill"
   | "rename_node"
   | "create_section"
-  | "set_parent";
+  | "set_parent"
+  | "execute_code";
 
 type CommandParams = {
   get_document_info: Record<string, never>;
@@ -3151,6 +3152,29 @@ server.tool(
               }`,
           },
         ],
+      };
+    }
+  }
+);
+
+// Execute Code Tool — full Figma Plugin API access (like the official MCP's use_figma)
+server.tool(
+  "execute_code",
+  `Run arbitrary JavaScript against the Figma Plugin API inside the open file. This is the most powerful tool: use it for anything the fixed tools can't do (gradients, effects/shadows/blur, fonts, variables, styles, components, auto-layout details, boolean ops, vector paths, images, bulk edits, deep reads).
+The code is the BODY of an async function. In scope: figma (the Plugin API), params (the 'args' you pass), log(...values), b64ToBytes(base64) -> Uint8Array.
+Use 'return' to send a value back (nodes become {id,name,type}; return plain objects for details). Load fonts before editing text: await figma.loadFontAsync({family:"Inter", style:"Regular"}). Use figma.getNodeByIdAsync(id). Images: figma.createImage(b64ToBytes(params.png)).hash. Keep each call focused; prefer several small calls over one huge one.`,
+  {
+    code: z.string().describe("Body of an async function using the Figma Plugin API; use `return` for results"),
+    args: z.record(z.any()).optional().describe("JSON values available to the code as `params` (e.g. ids, base64 image data)"),
+    timeoutMs: z.number().optional().describe("Timeout in ms (default 60000)"),
+  },
+  async ({ code, args, timeoutMs }: any) => {
+    try {
+      const result = await sendCommandToFigma("execute_code", { code, args }, timeoutMs ?? 60000);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `Error executing code: ${error instanceof Error ? error.message : String(error)}` }],
       };
     }
   }
