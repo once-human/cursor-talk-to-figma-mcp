@@ -38,6 +38,13 @@ function handleConnection(ws: ServerWebSocket<any>) {
   };
 }
 
+// Bun's send() returns bytes sent, -1 when queued behind backpressure (still
+// delivered), or 0 when the message was dropped.
+function logSendStatus(sent: number, target: string) {
+  if (sent === 0) console.warn(`! send to ${target} dropped`);
+  else if (sent === -1) console.log(`send to ${target} queued (backpressure)`);
+}
+
 const server = Bun.serve({
   port: 3055,
   // uncomment this to allow connections in windows wsl
@@ -82,9 +89,14 @@ const server = Bun.serve({
         console.log(`Type: ${data.type}, Channel: ${data.channel || 'N/A'}`);
         if (data.message?.command) {
           console.log(`Command: ${data.message.command}, ID: ${data.id}`);
+        } else if (data.message?.error) {
+          // checked before result: the plugin's error replies also carry result: {}
+          console.log(`Error response: ID: ${data.id}, Error: ${String(data.message.error).slice(0, 300)}`);
         } else if (data.message?.result) {
           console.log(`Response: ID: ${data.id}, Has Result: ${!!data.message.result}`);
         }
+        // Full payloads (can be megabytes of base64 for exports) only with DEBUG=1
+        if (process.env.DEBUG) console.log(`Full message:`, JSON.stringify(data, null, 2));
 
         if (data.type === "join") {
           const channelName = data.channel;
@@ -168,8 +180,7 @@ const server = Bun.serve({
                 sender: "peer",
                 channel: channelName
               };
-              const sent = client.send(JSON.stringify(broadcastMessage));
-              if (sent <= 0) console.log(`! send to peer #${broadcastCount} returned ${sent} (${sent === 0 ? "dropped" : "backpressure"})`);
+              logSendStatus(client.send(JSON.stringify(broadcastMessage)), `peer #${broadcastCount}`);
             }
           });
           
@@ -190,7 +201,7 @@ const server = Bun.serve({
 
           channelClients.forEach((client) => {
             if (client !== ws && client.readyState === WebSocket.OPEN) {
-              client.send(JSON.stringify(data));
+              logSendStatus(client.send(JSON.stringify(data)), "progress_update");
             }
           });
         }
