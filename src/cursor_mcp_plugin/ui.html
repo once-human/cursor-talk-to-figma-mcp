@@ -620,6 +620,8 @@
       async function handleSocketMessage(payload) {
         const data = payload.message;
         console.log("handleSocketMessage", data);
+        // system notices carry a plain string (or nothing); only objects are commands/replies
+        if (!data || typeof data !== "object") return;
 
         // If it's a response to a previous request
         if (data.id && state.pendingRequests.has(data.id)) {
