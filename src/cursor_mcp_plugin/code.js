@@ -4353,22 +4353,50 @@ async function setSelections(params) {
 // it back; nodes are turned into {id, name, type} so they can be serialized.
 // Only reachable through the localhost relay.
 // ---------------------------------------------------------------------------
-function toSerializable(value, depth) {
+// Turns any value into plain JSON. Figma objects (nodes, styles, variables,
+// collections) become {id, name, type}; cycles are cut on the current path only,
+// so deep plain trees come back whole.
+const EXECUTE_CODE_DEFAULT_TIMEOUT_MS = 60000;
+const SERIALIZE_MAX_DEPTH = 100;
+
+function toSerializable(value, ancestors, depth) {
+  ancestors = ancestors || [];
   depth = depth || 0;
-  if (value === null || value === undefined) return value === undefined ? null : value;
+  if (value === undefined || value === null) return null;
   const t = typeof value;
-  if (t === "string" || t === "number" || t === "boolean") return value;
+  if (t === "string" || t === "boolean") return value;
+  if (t === "number") return Number.isFinite(value) ? value : String(value);
+  if (t === "bigint" || t === "symbol") return String(value);
   if (t === "function") return "[function]";
-  if (depth > 6) return "[depth limit]";
-  if (value instanceof Uint8Array) return { bytes: value.length };
-  if (Array.isArray(value)) return value.map((v) => toSerializable(v, depth + 1));
-  if (t === "object" && typeof value.id === "string" && typeof value.type === "string" && "parent" in value) {
-    return { id: value.id, name: value.name, type: value.type };
+  if (value instanceof Date) return value.toISOString();
+  if (value instanceof ArrayBuffer) return { bytes: value.byteLength };
+  if (ArrayBuffer.isView(value)) return { bytes: value.byteLength };
+  if (ancestors.indexOf(value) !== -1) return "[circular]";
+  if (depth >= SERIALIZE_MAX_DEPTH) return "[depth limit]";
+  const path = ancestors.concat([value]);
+  const next = (v) => {
+    try { return toSerializable(v, path, depth + 1); } catch (e) { return "[unreadable]"; }
+  };
+  if (Array.isArray(value)) return value.map(next);
+  if (value instanceof Map) {
+    const out = {};
+    value.forEach((v, k) => { out[String(k)] = next(v); });
+    return out;
   }
+  if (value instanceof Set) return Array.from(value).map(next);
+  // Figma API objects keep their fields on prototype getters, so Object.keys() sees nothing.
+  const proto = Object.getPrototypeOf(value);
+  const isPlain = proto === Object.prototype || proto === null;
+  if (!isPlain && typeof value.id === "string" && ("type" in value || "resolvedType" in value || "name" in value)) {
+    const ref = { id: value.id };
+    try { if (value.name !== undefined) ref.name = value.name; } catch (e) {}
+    try { ref.type = value.type !== undefined ? value.type : value.resolvedType; } catch (e) {}
+    return ref;
+  }
+  // Image objects look plain, but their hash/getBytesAsync aren't enumerable.
+  if (typeof value.hash === "string" && typeof value.getBytesAsync === "function") return { imageHash: value.hash };
   const out = {};
-  for (const k of Object.keys(value)) {
-    try { out[k] = toSerializable(value[k], depth + 1); } catch (e) { out[k] = "[unreadable]"; }
-  }
+  for (const k of Object.keys(value)) out[k] = next(value[k]);
   return out;
 }
 
@@ -4386,19 +4414,31 @@ async function executeCode(params) {
   } catch (e) {
     throw new Error("Code did not compile: " + (e && e.message ? e.message : String(e)));
   }
-  // Never let one call hang the bridge: give up after timeoutMs (the work itself may still finish).
-  const timeoutMs = (params && params.timeoutMs) || 45000;
+  const requested = Number(params && params.timeoutMs);
+  const timeoutMs = Number.isFinite(requested) && requested > 0 ? requested : EXECUTE_CODE_DEFAULT_TIMEOUT_MS;
+  // A timed-out run can't be stopped: it keeps going in the background. Catch its
+  // late rejection so it doesn't surface as an unhandled promise rejection.
+  let run;
+  try {
+    run = Promise.resolve(fn(figma, args || {}, log, base64ToUint8Array));
+  } catch (e) {
+    run = Promise.reject(e);
+  }
+  run.catch(() => {});
   let timer;
   const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error("execute_code timed out after " + timeoutMs + " ms")), timeoutMs);
+    timer = setTimeout(
+      () => reject(new Error("execute_code timed out after " + timeoutMs + " ms. The code may still finish in the background; check the file before retrying.")),
+      timeoutMs
+    );
   });
   try {
-    const result = await Promise.race([fn(figma, args || {}, log, base64ToUint8Array), timeout]);
-    clearTimeout(timer);
+    const result = await Promise.race([run, timeout]);
     return { result: toSerializable(result), logs };
   } catch (e) {
-    clearTimeout(timer);
     const msg = e && e.message ? e.message : String(e);
     throw new Error(msg + (logs.length ? "\nlogs:\n" + logs.join("\n") : ""));
+  } finally {
+    clearTimeout(timer);
   }
 }

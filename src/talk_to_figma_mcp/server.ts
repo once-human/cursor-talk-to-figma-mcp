@@ -2747,6 +2747,8 @@ type CommandParams = {
   };
   execute_code: {
     code: string;
+    args?: Record<string, unknown>;
+    timeoutMs?: number;
   };
   join: {
     channel: string;
@@ -3158,22 +3160,34 @@ server.tool(
 );
 
 // Execute Code Tool — full Figma Plugin API access (like the official MCP's use_figma)
+const EXECUTE_CODE_DEFAULT_TIMEOUT_MS = 60000;
 server.tool(
   "execute_code",
   `Run arbitrary JavaScript against the Figma Plugin API inside the open file. This is the most powerful tool: use it for anything the fixed tools can't do (gradients, effects/shadows/blur, fonts, variables, styles, components, auto-layout details, boolean ops, vector paths, images, bulk edits, deep reads).
 The code is the BODY of an async function. In scope: figma (the Plugin API), params (the 'args' you pass), log(...values), b64ToBytes(base64) -> Uint8Array.
-Use 'return' to send a value back (nodes become {id,name,type}; return plain objects for details). Load fonts before editing text: await figma.loadFontAsync({family:"Inter", style:"Regular"}). Use figma.getNodeByIdAsync(id). Images: figma.createImage(b64ToBytes(params.png)).hash. Keep each call focused; prefer several small calls over one huge one.`,
+Use 'return' to send a value back. Plain objects, arrays, Maps and Sets come back whole; Figma nodes, styles and variables become {id,name,type}, so return plain objects for their details. Load fonts before editing text: await figma.loadFontAsync({family:"Inter", style:"Regular"}). Use figma.getNodeByIdAsync(id). Images: figma.createImage(b64ToBytes(params.png)).hash. Keep each call focused; prefer several small calls over one huge one.
+Default timeout 60 s (timeoutMs, 1000-600000). A run that times out may still finish in the background, so check the file before retrying. A synchronous infinite loop freezes the plugin until it is re-run.`,
   {
     code: z.string().describe("Body of an async function using the Figma Plugin API; use `return` for results"),
     args: z.record(z.any()).optional().describe("JSON values available to the code as `params` (e.g. ids, base64 image data)"),
-    timeoutMs: z.number().optional().describe("Timeout in ms (default 60000)"),
+    timeoutMs: z
+      .number()
+      .int()
+      .min(1000)
+      .max(600000)
+      .optional()
+      .describe(`Timeout in ms (default ${EXECUTE_CODE_DEFAULT_TIMEOUT_MS})`),
   },
   async ({ code, args, timeoutMs }: any) => {
+    const limit = timeoutMs ?? EXECUTE_CODE_DEFAULT_TIMEOUT_MS;
     try {
-      const result = await sendCommandToFigma("execute_code", { code, args }, timeoutMs ?? 60000);
+      // The plugin enforces the limit; the server waits 5 s longer so the plugin's
+      // own timeout error (with logs) arrives instead of a generic one.
+      const result = await sendCommandToFigma("execute_code", { code, args, timeoutMs: limit }, limit + 5000);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     } catch (error) {
       return {
+        isError: true,
         content: [{ type: "text", text: `Error executing code: ${error instanceof Error ? error.message : String(error)}` }],
       };
     }

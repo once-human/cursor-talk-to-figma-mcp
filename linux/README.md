@@ -7,8 +7,8 @@ This fork works with the unofficial [figma-linux](https://github.com/Figma-Linux
 - **No analytics.** The plugin no longer sends usage events to Google Analytics, and `google-analytics.com` is gone from the manifest's `networkAccess`.
 - **Relay on localhost only.** `src/socket.ts` binds to `127.0.0.1`, so nobody on your network can join a channel and drive your open file.
 - **Fixed channel.** The plugin always joins the channel `figma`, so the agent can call `join_channel("figma")` without you reading out a random ID. Run the plugin in one file at a time.
-- **`execute_code` tool.** Runs any Figma Plugin API code in the open file and returns `{result, logs}`, for anything the fixed tools can't do. A run that doesn't finish within 45 s (or `timeoutMs`) returns an error.
-- **Short relay logs.** The relay logs joins, leaves and dropped sends, not full message bodies, so `journalctl --user -u figma-relay` stays readable.
+- **`execute_code` tool.** Runs any Figma Plugin API code in the open file and returns `{result, logs}`, for anything the fixed tools can't do. A run that doesn't finish within 60 s (or `timeoutMs`, up to 10 min) returns an error; failed runs are flagged `isError`.
+- **Short relay logs.** The relay logs joins, commands, error replies and dropped sends, not full message bodies (set `DEBUG=1` for those), so `journalctl --user -u figma-relay` stays readable.
 - **Renamed plugin.** The dev plugin shows up as **Talk to Figma (local)**, so it isn't mixed up with the Community plugin that has the same id.
 
 ## Setup
