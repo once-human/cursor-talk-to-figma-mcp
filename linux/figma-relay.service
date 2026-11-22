@@ -6,6 +6,7 @@ WorkingDirectory=%h/Documents/Projects/talk-to-figma
 ExecStart=/usr/bin/bun run src/socket.ts
 Restart=on-failure
 RestartSec=2
-# The relay prints every message in full (your design data); keep that out of the journal.
-StandardOutput=null
+
+# short lines only (types, channels, command names) — no design data
+StandardOutput=journal
 StandardError=journal

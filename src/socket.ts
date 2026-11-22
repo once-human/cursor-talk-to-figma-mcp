@@ -85,7 +85,6 @@ const server = Bun.serve({
         } else if (data.message?.result) {
           console.log(`Response: ID: ${data.id}, Has Result: ${!!data.message.result}`);
         }
-        console.log(`Full message:`, JSON.stringify(data, null, 2));
 
         if (data.type === "join") {
           const channelName = data.channel;
@@ -169,9 +168,8 @@ const server = Bun.serve({
                 sender: "peer",
                 channel: channelName
               };
-              console.log(`\n=== Broadcasting to peer #${broadcastCount} ===`);
-              console.log(JSON.stringify(broadcastMessage, null, 2));
-              client.send(JSON.stringify(broadcastMessage));
+              const sent = client.send(JSON.stringify(broadcastMessage));
+              if (sent <= 0) console.log(`! send to peer #${broadcastCount} returned ${sent} (${sent === 0 ? "dropped" : "backpressure"})`);
             }
           });
           
