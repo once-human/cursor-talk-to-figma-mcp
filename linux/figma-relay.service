@@ -1,0 +1,11 @@
+[Unit]
+Description=Talk-to-Figma WebSocket relay (127.0.0.1:3055)
+
+[Service]
+WorkingDirectory=%h/Documents/Projects/talk-to-figma
+ExecStart=/usr/bin/bun run src/socket.ts
+Restart=on-failure
+RestartSec=2
+# The relay prints every message in full (your design data); keep that out of the journal.
+StandardOutput=null
+StandardError=journal

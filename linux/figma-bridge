@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# figma-bridge: start the Talk-to-Figma WebSocket relay (ws://127.0.0.1:3055).
+# Stop it with Ctrl+C.
+set -euo pipefail
+
+REPO="$HOME/Documents/Projects/talk-to-figma"
+PORT=3055
+
+if ! command -v bun >/dev/null 2>&1; then
+  echo "figma-bridge: bun not found on PATH (install with: yay -S --needed bun-bin)" >&2
+  exit 1
+fi
+
+if ss -ltn "sport = :$PORT" | grep -q LISTEN; then
+  echo "figma-bridge: something is already listening on port $PORT:"
+  ss -ltnp "sport = :$PORT"
+  echo "If that's an old relay, stop it (Ctrl+C in its terminal, or: pkill -f 'src/socket.ts')."
+  exit 1
+fi
+
+cd "$REPO"
+echo "Starting Talk-to-Figma relay on ws://127.0.0.1:$PORT  (stop with Ctrl+C)"
+exec bun socket
