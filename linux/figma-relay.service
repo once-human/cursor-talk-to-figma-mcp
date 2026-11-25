@@ -4,7 +4,7 @@ Description=Talk-to-Figma WebSocket relay (127.0.0.1:3055)
 [Service]
 WorkingDirectory=%h/Documents/Projects/talk-to-figma
 ExecStart=/usr/bin/bun run src/socket.ts
-Restart=on-failure
+Restart=always
 RestartSec=2
 
 # short lines only (types, channels, command names) — no design data

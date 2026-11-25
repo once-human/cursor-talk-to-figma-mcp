@@ -588,14 +588,16 @@
           state.socket.onclose = () => {
             state.connected = false;
             state.socket = null;
-            updateConnectionStatus(false, "Disconnected from server");
+            updateConnectionStatus(false, "Disconnected from server, reconnecting…");
+            scheduleReconnect();
           };
 
           state.socket.onerror = (error) => {
             console.error("WebSocket error:", error);
-            updateConnectionStatus(false, "Connection error");
+            updateConnectionStatus(false, "Connection error, reconnecting…");
             state.connected = false;
             state.socket = null;
+            scheduleReconnect();
           };
         } catch (error) {
           console.error("Connection error:", error);
@@ -606,8 +608,27 @@
         }
       }
 
+      // local edit: reconnect on its own when the relay restarts or drops, so the plugin
+      // never has to be re-run for that. Only a click on Disconnect stops it.
+      let reconnectTimer = null;
+      function scheduleReconnect() {
+        if (state.manualDisconnect || reconnectTimer) return;
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null;
+          if (!state.connected && !state.socket && !state.manualDisconnect) connectToServer(state.serverPort || 3055);
+        }, 2000);
+      }
+      // and a slow check, in case a close event never arrives
+      setInterval(() => {
+        if (state.manualDisconnect) return;
+        if (!state.socket || state.socket.readyState === WebSocket.CLOSED) {
+          state.socket = null; state.connected = false; scheduleReconnect();
+        }
+      }, 10000);
+
       // Disconnect from websocket server
       function disconnectFromServer() {
+        state.manualDisconnect = true;
         if (state.socket) {
           state.socket.close();
           state.socket = null;
@@ -791,6 +812,7 @@
           disconnectFromServer();
         } else {
           const port = parseInt(portInput.value, 10) || 3055;
+          state.manualDisconnect = false;
           updateConnectionStatus(false, "Connecting...");
           connectionStatus.className = "status info";
           connectToServer(port);

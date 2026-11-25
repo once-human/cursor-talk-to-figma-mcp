@@ -62,6 +62,26 @@ const server = Bun.serve({
       });
     }
 
+    // local edit: file hand-off for the plugin (big images can't ride the MCP channel).
+    // POST /out/<name> saves a plugin export; GET /in/<name> serves a local image for the plugin to place.
+    // Plain names only, inside two fixed folders, loopback only.
+    const url = new URL(req.url);
+    const m = url.pathname.match(/^\/(out|in)\/([A-Za-z0-9._-]{1,120})$/);
+    if (m && !m[2].startsWith(".")) {
+      const cors = { "Access-Control-Allow-Origin": "*" };
+      const dir = `${process.env.FIGMA_IO_DIR ?? `${process.env.HOME}/Documents/Projects/still-breathing/pipeline`}/figma-${m[1]}`;
+      if (m[1] === "out" && req.method === "POST") {
+        return req.arrayBuffer().then(async (b) => {
+          await Bun.write(`${dir}/${m[2]}`, b);
+          return new Response(`saved ${b.byteLength}`, { headers: cors });
+        });
+      }
+      if (m[1] === "in" && req.method === "GET") {
+        const f = Bun.file(`${dir}/${m[2]}`);
+        return f.exists().then((ok) => ok ? new Response(f, { headers: cors }) : new Response("not found", { status: 404, headers: cors }));
+      }
+    }
+
     // Handle WebSocket upgrade
     const success = server.upgrade(req, {
       headers: {

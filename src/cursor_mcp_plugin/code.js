@@ -4400,6 +4400,7 @@ function toSerializable(value, ancestors, depth) {
   return out;
 }
 
+const execInflight = { count: 0 };
 async function executeCode(params) {
   const { code, args } = params || {};
   if (!code || typeof code !== "string") throw new Error("Missing code parameter");
@@ -4424,11 +4425,15 @@ async function executeCode(params) {
   } catch (e) {
     run = Promise.reject(e);
   }
-  run.catch(() => {});
+  // local edit: count runs still going, so a timeout can say why later calls stall
+  // (Figma renders exports one at a time: a big export left running blocks every export after it)
+  execInflight.count++;
+  run.then(() => { execInflight.count--; }, () => { execInflight.count--; });
   let timer;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(
-      () => reject(new Error("execute_code timed out after " + timeoutMs + " ms. The code may still finish in the background; check the file before retrying.")),
+      () => reject(new Error("execute_code timed out after " + timeoutMs + " ms. The code may still finish in the background; check the file before retrying." +
+        (execInflight.count > 1 ? " " + (execInflight.count - 1) + " earlier run(s) are still going in this plugin; exports queue behind them. Re-run the plugin (Plugins > Development > Talk to Figma (local)) to clear them." : ""))),
       timeoutMs
     );
   });
