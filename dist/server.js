@@ -2410,7 +2410,8 @@ server.tool(
   `Run arbitrary JavaScript against the Figma Plugin API inside the open file. This is the most powerful tool: use it for anything the fixed tools can't do (gradients, effects/shadows/blur, fonts, variables, styles, components, auto-layout details, boolean ops, vector paths, images, bulk edits, deep reads).
 The code is the BODY of an async function. In scope: figma (the Plugin API), params (the 'args' you pass), log(...values), b64ToBytes(base64) -> Uint8Array.
 Use 'return' to send a value back. Plain objects, arrays, Maps and Sets come back whole; Figma nodes, styles and variables become {id,name,type}, so return plain objects for their details. Load fonts before editing text: await figma.loadFontAsync({family:"Inter", style:"Regular"}). Use figma.getNodeByIdAsync(id). Images: figma.createImage(b64ToBytes(params.png)).hash. Keep each call focused; prefer several small calls over one huge one.
-Default timeout 60 s (timeoutMs, 1000-600000). A run that times out may still finish in the background, so check the file before retrying. A synchronous infinite loop freezes the plugin until it is re-run.`,
+Default timeout 60 s (timeoutMs, 1000-600000). A run that times out keeps going and keeps its result: the error names its runId; collect it with execute_code_result instead of sending the code again (repeats pile up behind it). A synchronous infinite loop freezes the plugin until it is re-run.
+Exports: Figma's own PNG/JPG export is slow and runs one at a time. For anything big use exportPng(node, {name:"file.png", scale:3, hide:[nodes to hide], clearFills:true}) \u2014 it exports vectors and the local relay rasterises them (resvg) into figma-out/<name>; returns the relay's message.`,
   {
     code: z.string().describe("Body of an async function using the Figma Plugin API; use `return` for results"),
     args: z.record(z.any()).optional().describe("JSON values available to the code as `params` (e.g. ids, base64 image data)"),
@@ -2426,6 +2427,23 @@ Default timeout 60 s (timeoutMs, 1000-600000). A run that times out may still fi
         isError: true,
         content: [{ type: "text", text: `Error executing code: ${error instanceof Error ? error.message : String(error)}` }]
       };
+    }
+  }
+);
+server.tool(
+  "execute_code_result",
+  "Collect the outcome of an execute_code run that timed out (it keeps going in the plugin). Waits up to waitMs for it to finish, then returns {status: running|done|error, ms, result, error, logs}.",
+  {
+    runId: z.string().describe("The runId named in the timeout error, e.g. r12"),
+    waitMs: z.number().int().min(0).max(6e5).optional().describe("How long to wait for it to finish (default 60000)")
+  },
+  async ({ runId, waitMs }) => {
+    const wait = waitMs ?? 6e4;
+    try {
+      const result = await sendCommandToFigma("run_status", { runId, waitMs: wait }, wait + 5e3);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      return { isError: true, content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : String(error)}` }] };
     }
   }
 );
