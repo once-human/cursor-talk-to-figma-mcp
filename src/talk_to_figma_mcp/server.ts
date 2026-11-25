@@ -2880,6 +2880,8 @@ function connectToFigma(port: number = 3055) {
     logger.info('Connected to Figma socket server');
     // Reset channel on new connection
     currentChannel = null;
+    // local edit: the channel is fixed, so join it straight away (after a relay restart too)
+    joinChannel("figma").catch((e) => logger.error(`Auto-join failed: ${e instanceof Error ? e.message : String(e)}`));
   });
 
   ws.on("message", (data: any) => {

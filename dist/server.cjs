@@ -2238,6 +2238,7 @@ function connectToFigma(port = 3055) {
   ws.on("open", () => {
     logger.info("Connected to Figma socket server");
     currentChannel = null;
+    joinChannel("figma").catch((e) => logger.error(`Auto-join failed: ${e instanceof Error ? e.message : String(e)}`));
   });
   ws.on("message", (data) => {
     try {
