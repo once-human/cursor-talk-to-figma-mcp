@@ -264,6 +264,8 @@ async function handleCommand(command, params) {
       return await setParent(params);
     case "execute_code":
       return await executeCode(params);
+    case "run_status":
+      return await runStatus(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -4401,6 +4403,51 @@ function toSerializable(value, ancestors, depth) {
 }
 
 const execInflight = { count: 0 };
+// local edit: every run gets an id and keeps its outcome, so a run that outlives its
+// timeout is collected later (run_status) instead of being sent again and piling up.
+const execRuns = new Map();
+let execSeq = 0;
+function settleRun(id, patch) {
+  const r = execRuns.get(id);
+  if (r) Object.assign(r, patch, { ended: Date.now() });
+  if (execRuns.size > 30) execRuns.delete(execRuns.keys().next().value);
+}
+function stillRunning(exceptId) {
+  const out = [];
+  execRuns.forEach((r, id) => { if (r.status === "running" && id !== exceptId) out.push(id + " (" + Math.round((Date.now() - r.started) / 1000) + " s)"); });
+  return out;
+}
+async function runStatus(params) {
+  const r = execRuns.get(params && params.runId);
+  if (!r) throw new Error("No run " + (params && params.runId) + " (only the last 30 are kept; the plugin may have been re-run)");
+  const waitMs = Math.max(0, Math.min(600000, Number(params.waitMs) || 0));
+  if (r.status === "running" && waitMs) await Promise.race([r.done, new Promise((res) => setTimeout(res, waitMs))]);
+  return { runId: params.runId, status: r.status, ms: (r.ended || Date.now()) - r.started, result: r.result, error: r.error, logs: r.logs };
+}
+// Big raster exports are slow inside Figma (one at a time, all in the plugin's thread) and can
+// stall every export after them. exportPng exports vectors (fast) and the local relay turns them
+// into pixels with resvg, the same result in a fraction of the time.
+//   await exportPng(node, { name: "x.png", scale: 3, hide: [artNode], clearFills: true })
+async function exportPng(node, opts) {
+  opts = opts || {};
+  const name = opts.name; const scale = opts.scale || 1;
+  if (!name || !/^[A-Za-z0-9._-]{1,120}$/.test(name)) throw new Error("exportPng: plain file name needed, e.g. {name:'out.png'}");
+  const hidden = (opts.hide || []).filter((n) => n && n.visible);
+  const fills = opts.clearFills && "fills" in node ? node.fills : null;
+  hidden.forEach((n) => { n.visible = false; });
+  if (fills) node.fills = [];
+  let svg;
+  try {
+    svg = await node.exportAsync({ format: "SVG", svgOutlineText: true, svgIdAttribute: false });
+  } finally {
+    hidden.forEach((n) => { n.visible = true; });
+    if (fills) node.fills = fills;
+  }
+  const res = await fetch("http://localhost:3055/out/" + name + "?raster=" + scale, { method: "POST", body: svg });
+  const text = await res.text();
+  if (res.status !== 200) throw new Error("exportPng: relay said " + res.status + " " + text);
+  return text;
+}
 async function executeCode(params) {
   const { code, args } = params || {};
   if (!code || typeof code !== "string") throw new Error("Missing code parameter");
@@ -4411,7 +4458,7 @@ async function executeCode(params) {
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
   let fn;
   try {
-    fn = new AsyncFunction("figma", "params", "log", "b64ToBytes", code);
+    fn = new AsyncFunction("figma", "params", "log", "b64ToBytes", "exportPng", code);
   } catch (e) {
     throw new Error("Code did not compile: " + (e && e.message ? e.message : String(e)));
   }
@@ -4421,25 +4468,34 @@ async function executeCode(params) {
   // late rejection so it doesn't surface as an unhandled promise rejection.
   let run;
   try {
-    run = Promise.resolve(fn(figma, args || {}, log, base64ToUint8Array));
+    run = Promise.resolve(fn(figma, args || {}, log, base64ToUint8Array, exportPng));
   } catch (e) {
     run = Promise.reject(e);
   }
   // local edit: count runs still going, so a timeout can say why later calls stall
   // (Figma renders exports one at a time: a big export left running blocks every export after it)
   execInflight.count++;
-  run.then(() => { execInflight.count--; }, () => { execInflight.count--; });
+  const runId = "r" + (++execSeq);
+  const busy = stillRunning(runId);
+  const rec = { status: "running", started: Date.now(), logs };
+  rec.done = run.then(
+    (v) => { execInflight.count--; settleRun(runId, { status: "done", result: toSerializable(v) }); },
+    (e) => { execInflight.count--; settleRun(runId, { status: "error", error: e && e.message ? e.message : String(e) }); }
+  );
+  execRuns.set(runId, rec);
   let timer;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(
-      () => reject(new Error("execute_code timed out after " + timeoutMs + " ms. The code may still finish in the background; check the file before retrying." +
-        (execInflight.count > 1 ? " " + (execInflight.count - 1) + " earlier run(s) are still going in this plugin; exports queue behind them. Re-run the plugin (Plugins > Development > Talk to Figma (local)) to clear them." : ""))),
+      () => reject(new Error("execute_code: run " + runId + " is still going after " + timeoutMs + " ms. Don't send it again: collect it with execute_code_result {runId: \"" + runId + "\"}." +
+        (stillRunning(runId).length ? " Also still going: " + stillRunning(runId).join(", ") + " (exports wait behind these)." : ""))),
       timeoutMs
     );
   });
   try {
     const result = await Promise.race([run, timeout]);
-    return { result: toSerializable(result), logs };
+    const out = { result: toSerializable(result), logs, runId };
+    if (busy.length) out.note = "earlier runs were still going when this started: " + busy.join(", ");
+    return out;
   } catch (e) {
     const msg = e && e.message ? e.message : String(e);
     throw new Error(msg + (logs.length ? "\nlogs:\n" + logs.join("\n") : ""));

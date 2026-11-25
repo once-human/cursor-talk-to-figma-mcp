@@ -72,6 +72,16 @@ const server = Bun.serve({
       const dir = `${process.env.FIGMA_IO_DIR ?? `${process.env.HOME}/Documents/Projects/still-breathing/pipeline`}/figma-${m[1]}`;
       if (m[1] === "out" && req.method === "POST") {
         return req.arrayBuffer().then(async (b) => {
+          // ?raster=<scale>: the body is an SVG export; draw it to <name> with resvg (fast, off Figma's thread)
+          const zoom = Number(url.searchParams.get("raster"));
+          if (zoom > 0 && zoom <= 8) {
+            const svg = `${dir}/${m[2].replace(/\.[a-z]+$/i, "")}.svg`;
+            await Bun.write(svg, b);
+            const p = Bun.spawn(["resvg", "--zoom", String(zoom), svg, `${dir}/${m[2]}`], { stderr: "pipe" });
+            const code = await p.exited;
+            if (code !== 0) return new Response(`resvg failed: ${await new Response(p.stderr).text()}`, { status: 500, headers: cors });
+            return new Response(`saved ${m[2]} from ${b.byteLength} B of SVG at ${zoom}x`, { headers: cors });
+          }
           await Bun.write(`${dir}/${m[2]}`, b);
           return new Response(`saved ${b.byteLength}`, { headers: cors });
         });
